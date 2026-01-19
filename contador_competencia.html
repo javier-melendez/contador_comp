@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Fecha máxima para fallar (1 año + prórroga + suspensiones)</title>
+  <style>
+    :root{ --accent:#00695c; --bg:#fafbfc; --fg:#222; --border:#e0e0e0; --radius:10px; }
+    body{ font-family:system-ui,sans-serif; background:var(--bg); color:var(--fg);
+      margin:28px auto; max-width:860px; padding:0 16px 60px; line-height:1.5; }
+    h1{ color:var(--accent); font-size:1.55rem; margin:0 0 8px; }
+    .muted{ color:#777; margin:0 0 18px; }
+    fieldset{ border:1px solid var(--border); border-radius:var(--radius); background:#fff;
+      padding:16px; margin:14px 0; }
+    legend{ padding:0 8px; color:var(--accent); font-weight:800; }
+    label{ display:block; font-weight:700; margin:10px 0 6px; }
+    input,select{ width:100%; box-sizing:border-box; padding:10px 12px;
+      border:1px solid var(--border); border-radius:var(--radius);
+      background:#fafbfc; font-size:1rem; }
+    .row{ display:flex; gap:12px; flex-wrap:wrap; }
+    .row > div{ flex:1 1 240px; min-width:190px; }
+    button{ border:0; border-radius:var(--radius); padding:10px 12px;
+      background:var(--accent); color:#fff; cursor:pointer; font-weight:800; }
+    button.secondary{ background:#0288d1; }
+    button.warn{ background:#fbc02d; color:#222; }
+    button.ghost{ background:transparent; color:var(--accent); border:1px solid var(--border); }
+    button:active{ opacity:.92; }
+    .actions{ display:flex; gap:10px; flex-wrap:wrap; margin-top:12px; }
+    .actions button{ flex:1 1 170px; }
+    .note{ background:#e0f2f1; border-left:4px solid var(--accent);
+      padding:12px; border-radius:var(--radius); margin-top:12px; }
+    pre{ background:#f5f5f5; border:1px solid var(--border); border-radius:var(--radius);
+      padding:12px; overflow:auto; font-family:ui-monospace,monospace; font-size:.95rem; }
+    .susp-item{ border:1px dashed var(--border); border-radius:var(--radius);
+      padding:12px; margin-top:10px; background:#fff; }
+    .tiny{ font-size:.9rem; color:#666; margin-top:6px; }
+    .danger{ color:#c62828; font-weight:900; }
+    .ok{ color:#2e7d32; font-weight:900; }
+  </style>
+</head>
+<body>
+  <h1>Fecha máxima para fallar (1 año + prórroga + suspensiones)</h1>
+  <p class="muted">
+    Se calcula: <b>1 año calendario</b> desde la fecha inicial + <b>prórroga (0 a 6 meses)</b> +
+    <b>días suspendidos</b> (manuales + cierres base dentro del periodo).
+    Los <b>festivos/fines de semana</b> solo se usan para <b>ajustar la fecha final</b> si cae inhábil.
+  </p>
+
+  <fieldset>
+    <legend>1) Datos base</legend>
+    <div class="row">
+      <div>
+        <label for="fecha_inicio">📆 Fecha inicial</label>
+        <input id="fecha_inicio" type="date">
+      </div>
+      <div>
+        <label for="prorroga_meses">🧾 Prórroga (meses, máx. 6)</label>
+        <input id="prorroga_meses" type="number" min="0" max="6" value="0">
+        <div class="tiny">0 a 6. Se suma como meses calendario.</div>
+      </div>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>2) Suspensiones manuales</legend>
+    <div class="tiny">
+      Cada rango suma días calendario al término (incluye inicio y fin). Si fin queda vacío, cuenta 1 día.
+    </div>
+
+    <div class="actions">
+      <button id="btn_add" type="button" class="secondary">+ Agregar suspensión</button>
+      <button id="btn_clear_susp" type="button" class="ghost">Quitar todas</button>
+    </div>
+
+    <div id="susp_container"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>3) Resultado</legend>
+
+    <div class="actions">
+      <button id="btn_calc" type="button">Calcular fecha máxima</button>
+      <button id="btn_toggle_detail" type="button" class="secondary">Ver/ocultar detalle</button>
+      <button id="btn_reset" type="button" class="warn">Limpiar</button>
+    </div>
+
+    <div id="out" class="note" style="display:none"></div>
+
+    <div id="detail" style="display:none">
+      <h3 style="margin:14px 0 8px">Resumen detallado (con rangos)</h3>
+      <pre id="detail_pre"></pre>
+    </div>
+  </fieldset>
+
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+  // ---------- Utilidades ----------
+  const two = (n)=>String(n).padStart(2,'0');
+  const fmt = (d)=>`${two(d.getDate())}-${two(d.getMonth()+1)}-${d.getFullYear()}`;
+  const ymd = (d)=>`${d.getFullYear()}-${two(d.getMonth()+1)}-${two(d.getDate())}`;
+  const parseYMD = (s)=>{ const [y,m,da]=s.split("-").map(Number); return new Date(y,m-1,da); };
+  const el = (id)=>document.getElementById(id);
+
+  // ---------- Cierres judiciales base ----------
+  const cierres_rangos = [
+    ["01/01/2020","10/01/2020"],["17/03/2020","30/06/2020"],["13/11/2020",null],
+    ["19/12/2020","11/01/2021"],["12/03/2021",null],["06/09/2021",null],
+    ["20/12/2021","10/01/2022"],["19/12/2022","11/01/2023"],["12/09/2023","15/09/2023"],
+    ["18/10/2023",null],["24/11/2023",null],["27/11/2023",null],["28/11/2023",null],
+    ["20/12/2023","14/01/2024"],["18/03/2024",null],["19/04/2024",null],
+    ["24/04/2024","10/06/2024"],["27/08/2024","28/08/2024"],["20/12/2024","10/01/2025"],
+    ["22/12/2025","09/01/2026"]
+  ];
+
+  function ddmmyyyyToDate(s){
+    const [d,m,y] = s.split("/").map(Number);
+    return new Date(y,m-1,d);
+  }
+
+  function buildSetFromRangesDDMMYYYY(ranges){
+    const set = new Set();
+    for(const [iniS, finS] of ranges){
+      const ini = ddmmyyyyToDate(iniS);
+      const fin = finS ? ddmmyyyyToDate(finS) : ini;
+      for(let d=new Date(ini); d<=fin; d.setDate(d.getDate()+1)){
+        set.add(ymd(d));
+      }
+    }
+    return set;
+  }
+
+  const CIERRES_BASE_SET = buildSetFromRangesDDMMYYYY(cierres_rangos);
+
+  // ---------- Festivos Colombia ----------
+  function easterDate(year){
+    const a=year%19,b=Math.floor(year/100),c=year%100;
+    const d=Math.floor(b/4),e=b%4,f=Math.floor((b+8)/25);
+    const g=Math.floor((b-f+1)/3),h=(19*a+b-d-g+15)%30;
+    const i=Math.floor(c/4),k=c%4,l=(32+2*e+2*i-h-k)%7;
+    const m=Math.floor((a+11*h+22*l)/451);
+    const month=Math.floor((h+l-7*m+114)/31);
+    const day=1+((h+l-7*m+114)%31);
+    return new Date(year,month-1,day);
+  }
+
+  function siguienteLunes(d){
+    const day=d.getDay();
+    if(day===1) return d;
+    const addDays=(8-day)%7;
+    const nd=new Date(d);
+    nd.setDate(nd.getDate()+addDays);
+    return nd;
+  }
+
+  function holidaysCOForYears(startY,endY){
+    const set=new Set();
+    const add=(date)=>set.add(ymd(date));
+    for(let y=startY;y<=endY;y++){
+      const pascua=easterDate(y);
+      const d=(base,off)=>{ const nd=new Date(base); nd.setDate(nd.getDate()+off); return nd; };
+
+      // Fijos
+      add(new Date(y,0,1)); add(new Date(y,4,1)); add(new Date(y,6,20));
+      add(new Date(y,7,7)); add(new Date(y,11,8)); add(new Date(y,11,25));
+
+      // Emiliani
+      add(siguienteLunes(new Date(y,0,6)));
+      add(siguienteLunes(new Date(y,2,19)));
+      add(siguienteLunes(new Date(y,5,29)));
+      add(siguienteLunes(new Date(y,7,15)));
+      add(siguienteLunes(new Date(y,9,12)));
+      add(siguienteLunes(new Date(y,10,1)));
+      add(siguienteLunes(new Date(y,10,11)));
+
+      // Pascua
+      add(d(pascua,-3)); add(d(pascua,-2));
+      add(siguienteLunes(d(pascua,39)));
+      add(siguienteLunes(d(pascua,60)));
+      add(siguienteLunes(d(pascua,68)));
+    }
+    return set;
+  }
+
+  // ---------- UI: suspensiones manuales ----------
+  const suspContainer = el("susp_container");
+
+  function makeSuspItem(){
+    const wrap = document.createElement("div");
+    wrap.className = "susp-item";
+    wrap.innerHTML = `
+      <div class="row">
+        <div>
+          <label>Inicio de suspensión</label>
+          <input type="date" class="sus_ini">
+        </div>
+        <div>
+          <label>Fin de suspensión</label>
+          <input type="date" class="sus_fin">
+          <div class="tiny">Si fin está vacío, se cuenta como 1 día (inicio).</div>
+        </div>
+      </div>
+      <div class="actions">
+        <button type="button" class="warn btn_remove">Quitar esta suspensión</button>
+      </div>
+    `;
+    wrap.querySelector(".btn_remove").addEventListener("click", () => wrap.remove());
+    return wrap;
+  }
+
+  el("btn_add").addEventListener("click", () => {
+    suspContainer.appendChild(makeSuspItem());
+  });
+
+  el("btn_clear_susp").addEventListener("click", () => {
+    suspContainer.innerHTML = "";
+  });
+
+  function readManualSuspRanges(){
+    const items = [...suspContainer.querySelectorAll(".susp-item")];
+    const ranges = [];
+    for(const it of items){
+      const ini = it.querySelector(".sus_ini").value;
+      const fin = it.querySelector(".sus_fin").value;
+      if(!ini) continue;
+
+      const iniD = parseYMD(ini);
+      const finD = fin ? parseYMD(fin) : iniD;
+
+      const a = iniD <= finD ? iniD : finD;
+      const b = iniD <= finD ? finD : iniD;
+      ranges.push([a,b]);
+    }
+    return ranges;
+  }
+
+  function buildManualSuspSet(ranges){
+    const set = new Set();
+    for(const [a,b] of ranges){
+      for(let d=new Date(a); d<=b; d.setDate(d.getDate()+1)){
+        set.add(ymd(d));
+      }
+    }
+    return set;
+  }
+
+  function countDaysInRanges(ranges){
+    let total = 0;
+    for(const [a,b] of ranges){
+      const ms = 24*60*60*1000;
+      total += Math.max(0, Math.round((b-a)/ms) + 1);
+    }
+    return total;
+  }
+
+  // NUEVO: contar días de un Set (cierres base) dentro de un intervalo [desde..hasta] inclusive
+  function countDaysFromSetInInterval(daysSet, desde, hasta){
+    let count = 0;
+    for(let d=new Date(desde); d<=hasta; d.setDate(d.getDate()+1)){
+      if(daysSet.has(ymd(d))) count++;
+    }
+    return count;
+  }
+
+  // ---------- Calendario: sumar meses/años ----------
+  function sumarMesesCalendario(fecha, meses){
+    const d = new Date(fecha);
+    const y = d.getFullYear(), m = d.getMonth();
+    const targetY = y + Math.floor((m + meses) / 12);
+    const targetM = (m + meses) % 12;
+    const lastDay = new Date(targetY, targetM + 1, 0).getDate();
+    return new Date(targetY, targetM, Math.min(d.getDate(), lastDay));
+  }
+
+  function sumarAniosCalendario(fecha, anios){
+    const d = new Date(fecha);
+    const targetY = d.getFullYear() + anios;
+    const targetM = d.getMonth();
+    const lastDay = new Date(targetY, targetM + 1, 0).getDate();
+    return new Date(targetY, targetM, Math.min(d.getDate(), lastDay));
+  }
+
+  // ---------- Ajuste final a hábil ----------
+  function esInhabilFinal(d, festivosSet, cierresSet, manualSuspSet){
+    const key = ymd(d);
+    const day = d.getDay();
+    const isWE = (day===0 || day===6);
+    return isWE || festivosSet.has(key) || cierresSet.has(key) || manualSuspSet.has(key);
+  }
+
+  function ajustarASiguienteHabil(d, festivosSet, cierresSet, manualSuspSet){
+    const nd = new Date(d);
+    let saltos = 0;
+    while(esInhabilFinal(nd, festivosSet, cierresSet, manualSuspSet)){
+      nd.setDate(nd.getDate()+1);
+      saltos++;
+      if(saltos > 3700) break;
+    }
+    return { fecha: nd, saltos };
+  }
+
+  // ---------- Calcular ----------
+  function calcular(){
+    const fechaStr = el("fecha_inicio").value;
+    if(!fechaStr){
+      alert("Selecciona la fecha inicial.");
+      return;
+    }
+
+    let prorroga = Number(el("prorroga_meses").value || 0);
+    if(prorroga < 0) prorroga = 0;
+    if(prorroga > 6) prorroga = 6;
+    el("prorroga_meses").value = prorroga;
+
+    const inicio = parseYMD(fechaStr);
+
+    const manualRanges = readManualSuspRanges();
+    const manualSuspSet = buildManualSuspSet(manualRanges);
+    const diasSuspendidosManual = countDaysInRanges(manualRanges);
+
+    // Festivos: rango suficiente para ajuste final
+    const yearStart = inicio.getFullYear() - 1;
+    const yearEnd   = inicio.getFullYear() + 8;
+    const festivosSet = holidaysCOForYears(yearStart, yearEnd);
+
+    const cierresSet = CIERRES_BASE_SET;
+
+    const detail = [];
+    detail.push(`A) FECHA INICIAL`);
+    detail.push(`   - Desde: ${fmt(inicio)}`);
+    detail.push("");
+
+    // 1 año calendario
+    const base1y = sumarAniosCalendario(inicio, 1);
+    detail.push(`B) PLAZO BASE (1 AÑO CALENDARIO)`);
+    detail.push(`   - De ${fmt(inicio)} a ${fmt(base1y)} (proyección calendario)`);
+    detail.push("");
+
+    // prórroga meses
+    const baseConProrroga = sumarMesesCalendario(base1y, prorroga);
+    detail.push(`C) PRÓRROGA`);
+    detail.push(`   - Prórroga: ${prorroga} mes(es)`);
+    detail.push(`   - De ${fmt(base1y)} a ${fmt(baseConProrroga)} (proyección calendario)`);
+    detail.push("");
+
+    // Intervalo “de conteo” para cierres base:
+    // contaremos cierres base dentro de [inicio .. baseConProrroga] inclusive
+    const diasCierresBase = countDaysFromSetInInterval(cierresSet, inicio, baseConProrroga);
+
+    detail.push(`D) SUSPENSIONES (SUMAN DÍAS CALENDARIO)`);
+    detail.push(`   D.1) Cierres judiciales base dentro del periodo`);
+    detail.push(`        - Periodo examinado: ${fmt(inicio)} → ${fmt(baseConProrroga)}`);
+    detail.push(`        - Días en cierres base dentro del periodo: ${diasCierresBase} día(s)`);
+    detail.push("");
+
+    detail.push(`   D.2) Suspensiones manuales`);
+    detail.push(`        - ${manualRanges.length} rango(s)`);
+    if(manualRanges.length){
+      manualRanges.forEach(([a,b],i)=>{
+        const ms = 24*60*60*1000;
+        const dias = Math.round((b-a)/ms)+1;
+        detail.push(`          #${i+1}: ${fmt(a)} → ${fmt(b)} = ${dias} día(s)`);
+      });
+    }
+    detail.push(`        - Total días suspendidos manuales: ${diasSuspendidosManual} día(s)`);
+    detail.push("");
+
+    const diasSuspendidosTotal = diasCierresBase + diasSuspendidosManual;
+
+    detail.push(`   D.3) Total suspendido a sumar`);
+    detail.push(`        - Cierres base: ${diasCierresBase}`);
+    detail.push(`        - Manuales: ${diasSuspendidosManual}`);
+    detail.push(`        - TOTAL: ${diasSuspendidosTotal} día(s)`);
+    detail.push("");
+
+    // Fecha preliminar: baseConProrroga + días suspendidos totales
+    const preliminar = new Date(baseConProrroga);
+    preliminar.setDate(preliminar.getDate() + diasSuspendidosTotal);
+
+    detail.push(`E) FECHA PRELIMINAR (ANTES DE AJUSTE FINAL)`);
+    detail.push(`   - De ${fmt(baseConProrroga)} a ${fmt(preliminar)} (sumando ${diasSuspendidosTotal} día(s))`);
+    detail.push("");
+
+    // Ajuste final si cae inhábil
+    const inh = esInhabilFinal(preliminar, festivosSet, cierresSet, manualSuspSet);
+    let final = preliminar;
+    let ajusteTxt = "No requirió ajuste final.";
+
+    if(inh){
+      const adj = ajustarASiguienteHabil(preliminar, festivosSet, cierresSet, manualSuspSet);
+      final = adj.fecha;
+      ajusteTxt = `Ajuste final: ${fmt(preliminar)} → ${fmt(final)} (saltó ${adj.saltos} día(s) por inhábil)`;
+      detail.push(`F) AJUSTE FINAL A HÁBIL`);
+      detail.push(`   - La fecha preliminar cae en inhábil (sábado/domingo/festivo/cierre/suspensión).`);
+      detail.push(`   - ${ajusteTxt}`);
+    } else {
+      detail.push(`F) AJUSTE FINAL A HÁBIL`);
+      detail.push(`   - La fecha preliminar cae en día hábil. ${ajusteTxt}`);
+    }
+
+    // Render
+    render(final, diasSuspendidosTotal, diasCierresBase, diasSuspendidosManual, prorroga, inh, ajusteTxt);
+    el("detail_pre").textContent = detail.join("\n");
+  }
+
+  function render(final, diasSuspTotal, diasCierresBase, diasSuspManual, prorroga, ajusto, ajusteTxt){
+    const out = el("out");
+    out.style.display = "block";
+    out.innerHTML = `
+      <div><b>📌 Fecha máxima para fallar:</b> <span class="${ajusto ? "danger" : "ok"}">${fmt(final)}</span></div>
+      <div class="tiny">
+        1 año + prórroga (${prorroga} mes/es) + suspendido total ${diasSuspTotal} día(s)
+        [cierres base: ${diasCierresBase}, manual: ${diasSuspManual}].
+        ${ajusto ? ajusteTxt : "No hubo ajuste final."}
+      </div>
+    `;
+  }
+
+  // ---------- Botones ----------
+  el("btn_calc").addEventListener("click", calcular);
+
+  el("btn_toggle_detail").addEventListener("click", () => {
+    const d = el("detail");
+    d.style.display = (d.style.display === "none") ? "block" : "none";
+  });
+
+  el("btn_reset").addEventListener("click", () => {
+    el("fecha_inicio").value = "";
+    el("prorroga_meses").value = 0;
+    el("susp_container").innerHTML = "";
+    el("out").style.display = "none";
+    el("detail").style.display = "none";
+    el("detail_pre").textContent = "";
+  });
+});
+</script>
+</body>
+</html>
